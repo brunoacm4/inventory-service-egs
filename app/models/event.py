@@ -43,4 +43,6 @@ class Event(Base):
     )
 
     # Relationships
-    tickets = relationship("Ticket", back_populates="event", cascade="all, delete-orphan")
+    ticket_categories = relationship(
+        "TicketCategory", back_populates="event", cascade="all, delete-orphan"
+    )

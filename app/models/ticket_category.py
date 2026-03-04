@@ -11,20 +11,20 @@ from app.utils.database import Base
 import enum
 
 
-class TicketStatus(str, enum.Enum):
+class TicketCategoryStatus(str, enum.Enum):
     AVAILABLE = "available"
     SOLD_OUT = "sold_out"
     INACTIVE = "inactive"
 
 
-class Ticket(Base):
+class TicketCategory(Base):
     """
-    Represents a ticket category/type for an event.
-    E.g., 'VIP', 'General Admission', 'Early Bird'.
-    Each category has its own price, stock, and sale window.
+    Represents a ticket batch/category for an event (e.g. 'VIP', 'General Admission').
+    Each category defines a price tier with its own stock pool and sale window.
+    Individual tickets (IssuedTicket) are only minted upon reservation confirmation.
     """
 
-    __tablename__ = "tickets"
+    __tablename__ = "ticket_categories"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     event_id = Column(
@@ -40,9 +40,9 @@ class Ticket(Base):
     sale_start = Column(DateTime(timezone=True), nullable=True)
     sale_end = Column(DateTime(timezone=True), nullable=True)
     status = Column(
-        SAEnum(TicketStatus, name="ticket_status"),
+        SAEnum(TicketCategoryStatus, name="ticket_category_status"),
         nullable=False,
-        default=TicketStatus.AVAILABLE,
+        default=TicketCategoryStatus.AVAILABLE,
     )
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     updated_at = Column(
@@ -53,5 +53,6 @@ class Ticket(Base):
     )
 
     # Relationships
-    event = relationship("Event", back_populates="tickets")
-    reservations = relationship("Reservation", back_populates="ticket", cascade="all, delete-orphan")
+    event = relationship("Event", back_populates="ticket_categories")
+    reservations = relationship("Reservation", back_populates="ticket_category", cascade="all, delete-orphan")
+    issued_tickets = relationship("IssuedTicket", back_populates="ticket_category", cascade="all, delete-orphan")

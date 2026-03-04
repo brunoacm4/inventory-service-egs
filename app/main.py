@@ -3,10 +3,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import events_router, tickets_router, reservations_router, health_router
+from app.api import events_router, ticket_categories_router, reservations_router, health_router
 from app.middleware.rate_limiter import RateLimiterMiddleware
 from app.utils.config import settings
 from app.utils.database import init_db
+
+# Import all models so Base.metadata.create_all() picks them up
+import app.models  # noqa: F401
 
 
 @asynccontextmanager
@@ -47,5 +50,5 @@ app.add_middleware(RateLimiterMiddleware)
 # Routers
 app.include_router(health_router)
 app.include_router(events_router)
-app.include_router(tickets_router)
+app.include_router(ticket_categories_router)
 app.include_router(reservations_router)

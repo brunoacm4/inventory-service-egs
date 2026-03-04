@@ -6,14 +6,14 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
-class TicketCreate(BaseModel):
-    """Request body to create a ticket category for an event."""
+class TicketCategoryCreate(BaseModel):
+    """Request body to create a ticket category (batch) for an event."""
 
-    name: str = Field(..., min_length=1, max_length=255, description="Ticket category name")
+    name: str = Field(..., min_length=1, max_length=255, description="Ticket category name (e.g. VIP, General Admission)")
     description: Optional[str] = Field(None, description="Ticket category description")
     price: Decimal = Field(..., ge=0, decimal_places=2, description="Price per ticket")
     currency: str = Field("EUR", max_length=3, description="ISO 4217 currency code")
-    total_quantity: int = Field(..., ge=1, description="Total number of tickets available")
+    total_quantity: int = Field(..., ge=1, description="Total number of tickets in this batch")
     max_per_order: Optional[int] = Field(10, ge=1, description="Maximum tickets per single order")
     sale_start: Optional[datetime] = Field(None, description="When ticket sales open (ISO 8601)")
     sale_end: Optional[datetime] = Field(None, description="When ticket sales close (ISO 8601)")
@@ -36,7 +36,7 @@ class TicketCreate(BaseModel):
     }
 
 
-class TicketUpdate(BaseModel):
+class TicketCategoryUpdate(BaseModel):
     """Request body to update a ticket category. All fields optional."""
 
     name: Optional[str] = Field(None, min_length=1, max_length=255)
@@ -47,10 +47,10 @@ class TicketUpdate(BaseModel):
     max_per_order: Optional[int] = Field(None, ge=1)
     sale_start: Optional[datetime] = None
     sale_end: Optional[datetime] = None
-    status: Optional[str] = Field(None, description="Ticket status: available, sold_out, inactive")
+    status: Optional[str] = Field(None, description="Status: available, sold_out, inactive")
 
 
-class TicketResponse(BaseModel):
+class TicketCategoryResponse(BaseModel):
     """Ticket category response object."""
 
     id: UUID
@@ -71,19 +71,19 @@ class TicketResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class TicketListResponse(BaseModel):
+class TicketCategoryListResponse(BaseModel):
     """Paginated list of ticket categories."""
 
-    data: List[TicketResponse]
+    data: List[TicketCategoryResponse]
     total: int = Field(..., description="Total number of ticket categories")
     skip: int
     limit: int
 
 
-class TicketAvailability(BaseModel):
+class TicketCategoryAvailability(BaseModel):
     """Real-time availability check for a ticket category."""
 
-    ticket_id: UUID
+    ticket_category_id: UUID
     event_id: UUID
     name: str
     available_quantity: int
