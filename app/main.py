@@ -1,10 +1,13 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import events_router, ticket_categories_router, reservations_router, health_router
+from app.api import events_router, tickets_router, health_router
 from app.middleware.rate_limiter import RateLimiterMiddleware
+from app.middleware.idempotency import IdempotencyMiddleware
+from app.services.expiry_service import reservation_expiry_loop
 from app.utils.config import settings
 from app.utils.database import init_db
 
@@ -17,8 +20,18 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     # Startup: create tables
     await init_db()
+
+    # Launch background task to expire stale reservations
+    expiry_task = asyncio.create_task(reservation_expiry_loop())
+
     yield
-    # Shutdown: cleanup if needed
+
+    # Shutdown: cancel background tasks
+    expiry_task.cancel()
+    try:
+        await expiry_task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(
@@ -26,7 +39,7 @@ app = FastAPI(
     version=settings.app_version,
     description=(
         "Inventory management microservice for the FlashSale platform. "
-        "Manages events, ticket categories, stock control, and temporary reservations. "
+        "Manages events, ticket stock control, and ticket lifecycle (reserve, confirm, cancel). "
         "Designed to handle high-concurrency flash sale scenarios with atomic stock operations."
     ),
     openapi_version="3.1.0",
@@ -44,11 +57,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Idempotency (applied before rate limiter so cached responses skip it)
+app.add_middleware(IdempotencyMiddleware)
+
 # Rate Limiter
 app.add_middleware(RateLimiterMiddleware)
 
 # Routers
 app.include_router(health_router)
 app.include_router(events_router)
-app.include_router(ticket_categories_router)
-app.include_router(reservations_router)
+app.include_router(tickets_router)

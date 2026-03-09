@@ -5,19 +5,13 @@ from app.schemas.event import (
     EventResponse,
     EventListResponse,
 )
-from app.schemas.ticket_category import (
-    TicketCategoryCreate,
-    TicketCategoryUpdate,
-    TicketCategoryResponse,
-    TicketCategoryListResponse,
-    TicketCategoryAvailability,
+from app.schemas.ticket import (
+    TicketBatchCreate,
+    TicketReserveRequest,
+    TicketResponse,
+    TicketListResponse,
+    TicketReserveResponse,
 )
-from app.schemas.reservation import (
-    ReservationCreate,
-    ReservationResponse,
-    ReservationListResponse,
-)
-from app.schemas.issued_ticket import IssuedTicketResponse
 
 __all__ = [
     "ErrorResponse",
@@ -26,13 +20,9 @@ __all__ = [
     "EventUpdate",
     "EventResponse",
     "EventListResponse",
-    "TicketCategoryCreate",
-    "TicketCategoryUpdate",
-    "TicketCategoryResponse",
-    "TicketCategoryListResponse",
-    "TicketCategoryAvailability",
-    "ReservationCreate",
-    "ReservationResponse",
-    "ReservationListResponse",
-    "IssuedTicketResponse",
+    "TicketBatchCreate",
+    "TicketReserveRequest",
+    "TicketResponse",
+    "TicketListResponse",
+    "TicketReserveResponse",
 ]

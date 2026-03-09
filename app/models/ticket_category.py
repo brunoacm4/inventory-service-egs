@@ -54,5 +54,4 @@ class TicketCategory(Base):
 
     # Relationships
     event = relationship("Event", back_populates="ticket_categories")
-    reservations = relationship("Reservation", back_populates="ticket_category", cascade="all, delete-orphan")
-    issued_tickets = relationship("IssuedTicket", back_populates="ticket_category", cascade="all, delete-orphan")
+    tickets = relationship("Ticket", back_populates="ticket_category", cascade="all, delete-orphan")

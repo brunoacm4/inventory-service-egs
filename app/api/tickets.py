@@ -1,151 +1,215 @@
 from uuid import UUID
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Security
-from fastapi.security import APIKeyHeader
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.schemas.ticket_category import (
-    TicketCategoryCreate,
-    TicketCategoryUpdate,
-    TicketCategoryResponse,
-    TicketCategoryListResponse,
-    TicketCategoryAvailability,
+from app.schemas.ticket import (
+    TicketBatchCreate,
+    TicketReserveRequest,
+    TicketResponse,
+    TicketListResponse,
+    TicketReserveResponse,
 )
 from app.schemas.common import ErrorResponse
-from app.services.ticket_category_service import TicketCategoryService
+from app.services.ticket_service import TicketService
 from app.services.event_service import EventService
 from app.utils.database import get_db
-from app.utils.config import settings
+from app.utils.auth import verify_auth
 
-router = APIRouter(prefix="/api/v1", tags=["Ticket Categories"])
-
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+router = APIRouter(prefix="/api/v1", tags=["Tickets"])
 
 
-async def verify_api_key(api_key: str = Security(api_key_header)):
-    if not api_key or api_key != settings.api_key:
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
-    return api_key
-
+# ------------------------------------------------------------------ #
+#  Batch-create tickets
+# ------------------------------------------------------------------ #
 
 @router.post(
-    "/events/{event_id}/ticket-categories",
-    response_model=TicketCategoryResponse,
+    "/events/{event_id}/tickets",
+    response_model=TicketListResponse,
     status_code=201,
-    summary="Create a ticket category",
+    summary="Batch-create tickets",
     description=(
-        "Create a new ticket category batch (e.g., 5000 VIP seats) for a specific event. "
-        "Individual tickets are not created here — they are minted lazily upon reservation confirmation."
+        "Create a batch of tickets for an event. Internally creates a ticket category "
+        "(defining the price tier) and N individual ticket records with status 'available'."
     ),
     responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
 )
-async def create_ticket_category(
+async def batch_create_tickets(
     event_id: UUID,
-    data: TicketCategoryCreate,
+    data: TicketBatchCreate,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(verify_api_key),
+    _: dict = Depends(verify_auth),
 ):
     event = await EventService.get_event(db, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    category = await TicketCategoryService.create_ticket_category(db, event_id, data)
-    return category
+    tickets = await TicketService.batch_create_tickets(db, event_id, data)
+    return TicketListResponse(
+        data=tickets,
+        total=len(tickets),
+        skip=0,
+        limit=len(tickets),
+    )
 
+
+# ------------------------------------------------------------------ #
+#  List tickets for an event
+# ------------------------------------------------------------------ #
 
 @router.get(
-    "/events/{event_id}/ticket-categories",
-    response_model=TicketCategoryListResponse,
-    summary="List ticket categories for an event",
-    description="Retrieve all ticket category batches available for a specific event.",
+    "/events/{event_id}/tickets",
+    response_model=TicketListResponse,
+    summary="List tickets for an event",
+    description="Retrieve a paginated list of tickets for a specific event. Optionally filter by status.",
     responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
 )
-async def list_ticket_categories(
+async def list_tickets(
     event_id: UUID,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
+    status: Optional[str] = Query(
+        None,
+        description="Filter by status: available, reserved, confirmed, cancelled",
+    ),
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(verify_api_key),
+    _: dict = Depends(verify_auth),
 ):
     event = await EventService.get_event(db, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    categories, total = await TicketCategoryService.list_by_event(db, event_id, skip, limit)
-    return TicketCategoryListResponse(data=categories, total=total, skip=skip, limit=limit)
+    tickets, total = await TicketService.list_tickets(
+        db, event_id, skip=skip, limit=limit, status=status,
+    )
+    return TicketListResponse(data=tickets, total=total, skip=skip, limit=limit)
 
 
-@router.get(
-    "/ticket-categories/{ticket_category_id}",
-    response_model=TicketCategoryResponse,
-    summary="Get ticket category details",
-    description="Retrieve detailed information about a specific ticket category batch.",
-    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
-)
-async def get_ticket_category(
-    ticket_category_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    _: str = Depends(verify_api_key),
-):
-    category = await TicketCategoryService.get_ticket_category(db, ticket_category_id)
-    if not category:
-        raise HTTPException(status_code=404, detail="Ticket category not found")
-    return category
-
-
-@router.put(
-    "/ticket-categories/{ticket_category_id}",
-    response_model=TicketCategoryResponse,
-    summary="Update a ticket category",
-    description="Update one or more fields of an existing ticket category batch.",
-    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
-)
-async def update_ticket_category(
-    ticket_category_id: UUID,
-    data: TicketCategoryUpdate,
-    db: AsyncSession = Depends(get_db),
-    _: str = Depends(verify_api_key),
-):
-    category = await TicketCategoryService.update_ticket_category(db, ticket_category_id, data)
-    if not category:
-        raise HTTPException(status_code=404, detail="Ticket category not found")
-    return category
-
-
-@router.delete(
-    "/ticket-categories/{ticket_category_id}",
-    status_code=204,
-    summary="Delete a ticket category",
-    description="Delete a ticket category batch and all associated reservations and issued tickets.",
-    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
-)
-async def delete_ticket_category(
-    ticket_category_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    _: str = Depends(verify_api_key),
-):
-    deleted = await TicketCategoryService.delete_ticket_category(db, ticket_category_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Ticket category not found")
-    return None
-
+# ------------------------------------------------------------------ #
+#  Get ticket details
+# ------------------------------------------------------------------ #
 
 @router.get(
-    "/ticket-categories/{ticket_category_id}/availability",
-    response_model=TicketCategoryAvailability,
-    summary="Check ticket category availability",
+    "/tickets/{ticket_id}",
+    response_model=TicketResponse,
+    summary="Get ticket details",
+    description="Retrieve detailed information about a specific ticket.",
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+async def get_ticket(
+    ticket_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(verify_auth),
+):
+    ticket = await TicketService.get_ticket(db, ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    return ticket
+
+
+# ------------------------------------------------------------------ #
+#  Reserve tickets
+# ------------------------------------------------------------------ #
+
+@router.post(
+    "/events/{event_id}/tickets/reserve",
+    response_model=TicketReserveResponse,
+    summary="Reserve tickets",
     description=(
-        "Check real-time availability and sale status for a specific ticket category. "
-        "Used by the Composer to verify stock before initiating a reservation."
+        "Reserve N available tickets for an event. "
+        "The service picks available tickets and transitions them to 'reserved' status. "
+        "Uses row-level locking with SKIP LOCKED for concurrency safety."
     ),
-    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        409: {
+            "model": ErrorResponse,
+            "description": "Insufficient available tickets or category unavailable",
+        },
+    },
 )
-async def check_availability(
-    ticket_category_id: UUID,
+async def reserve_tickets(
+    event_id: UUID,
+    data: TicketReserveRequest,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(verify_api_key),
+    _: dict = Depends(verify_auth),
 ):
-    availability = await TicketCategoryService.check_availability(db, ticket_category_id)
-    if not availability:
-        raise HTTPException(status_code=404, detail="Ticket category not found")
-    return availability
+    event = await EventService.get_event(db, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    tickets = await TicketService.reserve_tickets(db, event_id, data)
+    if tickets is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Unable to reserve tickets. Insufficient stock or category unavailable.",
+        )
+    return TicketReserveResponse(reserved_count=len(tickets), tickets=tickets)
+
+
+# ------------------------------------------------------------------ #
+#  Confirm reserved ticket
+# ------------------------------------------------------------------ #
+
+@router.post(
+    "/tickets/{ticket_id}/confirm",
+    response_model=TicketResponse,
+    summary="Confirm reserved ticket",
+    description=(
+        "Confirm a reserved ticket after successful payment. "
+        "Transitions the ticket from 'reserved' to 'confirmed'. "
+        "Stock remains permanently decremented. "
+        "Called by the Composer Service after the Payment Service confirms."
+    ),
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse, "description": "Ticket is not in reserved status"},
+    },
+)
+async def confirm_ticket(
+    ticket_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(verify_auth),
+):
+    ticket = await TicketService.confirm_ticket(db, ticket_id)
+    if not ticket:
+        raise HTTPException(
+            status_code=409,
+            detail="Ticket not found or not in reserved status.",
+        )
+    return ticket
+
+
+# ------------------------------------------------------------------ #
+#  Cancel reserved ticket
+# ------------------------------------------------------------------ #
+
+@router.post(
+    "/tickets/{ticket_id}/cancel",
+    response_model=TicketResponse,
+    summary="Cancel reserved ticket",
+    description=(
+        "Cancel a reserved ticket, releasing it back to the available pool. "
+        "Called when payment fails or the customer abandons checkout."
+    ),
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse, "description": "Ticket is not in reserved status"},
+    },
+)
+async def cancel_ticket(
+    ticket_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(verify_auth),
+):
+    ticket = await TicketService.cancel_ticket(db, ticket_id)
+    if not ticket:
+        raise HTTPException(
+            status_code=409,
+            detail="Ticket not found or not in reserved status.",
+        )
+    return ticket

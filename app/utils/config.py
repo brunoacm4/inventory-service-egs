@@ -14,14 +14,15 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = "redis://redis:6379/0"
 
-    # API Security
+    # API Security (service-to-service)
     api_key: str = "sk_test_inventory_change_me"
 
     # Rate Limiting
     rate_limit_per_minute: int = 60
 
-    # Reservation Settings
-    reservation_ttl_minutes: int = 15
+    # Ticket Reservation Settings
+    ticket_reservation_ttl_minutes: int = 15
+    expiry_check_interval_seconds: int = 30
 
     model_config = {
         "env_file": ".env",
