@@ -7,65 +7,21 @@ from pydantic import BaseModel, Field
 
 
 class TicketBatchCreate(BaseModel):
-    """
-    Request body to batch-create tickets for an event.
-    Internally creates a TicketCategory and N individual Ticket records
-    with status 'available'.
-    """
+    """Request to batch-create tickets for an event."""
 
-    name: str = Field(
-        ..., min_length=1, max_length=255,
-        description="Ticket category name (e.g. VIP, General Admission)",
-    )
-    description: Optional[str] = Field(None, description="Ticket category description")
+    category: str = Field(..., min_length=1, max_length=100, description="Category name (e.g. VIP, General)")
     price: Decimal = Field(..., ge=0, decimal_places=2, description="Price per ticket")
-    currency: str = Field("EUR", max_length=3, description="ISO 4217 currency code")
-    total_quantity: int = Field(..., ge=1, description="Number of tickets to create")
-    max_per_order: Optional[int] = Field(
-        10, ge=1, description="Maximum tickets per single reservation",
-    )
-    sale_start: Optional[datetime] = Field(None, description="When ticket sales open (ISO 8601)")
-    sale_end: Optional[datetime] = Field(None, description="When ticket sales close (ISO 8601)")
+    currency: str = Field("EUR", min_length=3, max_length=3, description="ISO 4217 currency code")
+    quantity: int = Field(..., ge=1, le=50000, description="Number of tickets to create")
 
     model_config = {
         "json_schema_extra": {
             "examples": [
                 {
-                    "name": "General Admission",
-                    "description": "Standard entry ticket",
-                    "price": 49.99,
+                    "category": "VIP",
+                    "price": 149.99,
                     "currency": "EUR",
-                    "total_quantity": 5000,
-                    "max_per_order": 4,
-                    "sale_start": "2026-03-01T10:00:00Z",
-                    "sale_end": "2026-06-20T17:00:00Z",
-                }
-            ]
-        }
-    }
-
-
-class TicketReserveRequest(BaseModel):
-    """
-    Request body to reserve tickets for an event.
-    The service picks N available tickets from the specified event
-    and transitions them to 'reserved' status.
-    """
-
-    quantity: int = Field(..., ge=1, description="Number of tickets to reserve")
-    external_reference: Optional[str] = Field(
-        None, description="External reference / correlation ID set by the Composer Service",
-    )
-    ticket_category_id: Optional[UUID] = Field(
-        None, description="Optional: reserve from a specific ticket category",
-    )
-
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "quantity": 2,
-                    "external_reference": "order_abc123",
+                    "quantity": 100,
                 }
             ]
         }
@@ -73,22 +29,21 @@ class TicketReserveRequest(BaseModel):
 
 
 class TicketResponse(BaseModel):
-    """Response object for a single ticket."""
+    """Individual ticket response with embedded category info."""
 
     id: UUID
     event_id: UUID
-    ticket_category_id: UUID
+    category: str
+    price: Decimal
+    currency: str
     status: str
+    customer_email: Optional[str] = None
     external_reference: Optional[str] = None
     reserved_at: Optional[datetime] = None
-    confirmed_at: Optional[datetime] = None
+    sold_at: Optional[datetime] = None
+    used_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
-
-    # Denormalized from TicketCategory
-    category_name: Optional[str] = Field(None, description="Ticket category name")
-    price: Optional[Decimal] = Field(None, description="Ticket price")
-    currency: Optional[str] = Field(None, description="Currency code")
 
     model_config = {"from_attributes": True}
 
@@ -97,13 +52,45 @@ class TicketListResponse(BaseModel):
     """Paginated list of tickets."""
 
     data: List[TicketResponse]
-    total: int = Field(..., description="Total number of tickets matching the query")
+    total: int = Field(..., description="Total matching tickets")
     skip: int
     limit: int
 
 
-class TicketReserveResponse(BaseModel):
-    """Response for a reserve tickets operation."""
+class BatchCreateResponse(BaseModel):
+    """Response after batch-creating tickets."""
+
+    created_count: int = Field(..., description="Number of tickets created")
+    category: str
+    event_id: UUID
+
+
+class ReserveRequest(BaseModel):
+    """Request body to reserve N tickets."""
+
+    quantity: int = Field(..., ge=1, description="Number of tickets to reserve")
+    customer_email: Optional[str] = Field(None, max_length=255, description="Customer email")
+    external_reference: Optional[str] = Field(
+        None, max_length=255, description="External reference (e.g. order or payment ID)"
+    )
+    category: Optional[str] = Field(None, max_length=100, description="Filter by category when reserving")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "quantity": 2,
+                    "customer_email": "fan@example.com",
+                    "external_reference": "ORDER-12345",
+                    "category": "VIP",
+                }
+            ]
+        }
+    }
+
+
+class ReserveResponse(BaseModel):
+    """Response after reserving tickets — returns the reserved ticket list."""
 
     reserved_count: int = Field(..., description="Number of tickets successfully reserved")
     tickets: List[TicketResponse]

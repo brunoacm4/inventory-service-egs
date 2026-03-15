@@ -1,142 +1,73 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Tuple
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.models.ticket import Ticket, TicketStatus
-from app.models.ticket_category import TicketCategory, TicketCategoryStatus
-from app.schemas.ticket import (
-    TicketBatchCreate,
-    TicketReserveRequest,
-    TicketResponse,
-)
-from app.services.ticket_category_service import TicketCategoryService
-from app.schemas.ticket_category import TicketCategoryCreate
+from app.schemas.ticket import TicketBatchCreate
 
 
 class TicketService:
-    """
-    Business logic for ticket management.
-    Handles batch creation, stock holds (reserve/cancel), and confirmation.
-    Focused on catalog & inventory — does NOT handle payment or entry validation.
-    """
+    """Business logic for ticket operations — simplified, no separate category entity."""
 
-    # ------------------------------------------------------------------ #
-    #  helpers
-    # ------------------------------------------------------------------ #
+    # ── Batch create ──────────────────────────────────────────────────────────
 
     @staticmethod
-    def _to_response(ticket: Ticket) -> TicketResponse:
-        """Convert a Ticket ORM object to a TicketResponse, denormalizing category fields."""
-        category = ticket.ticket_category
-        return TicketResponse(
-            id=ticket.id,
-            event_id=ticket.event_id,
-            ticket_category_id=ticket.ticket_category_id,
-            status=ticket.status.value if isinstance(ticket.status, TicketStatus) else ticket.status,
-            external_reference=ticket.external_reference,
-            reserved_at=ticket.reserved_at,
-            confirmed_at=ticket.confirmed_at,
-            created_at=ticket.created_at,
-            updated_at=ticket.updated_at,
-            category_name=category.name if category else None,
-            price=category.price if category else None,
-            currency=category.currency if category else None,
-        )
-
-    # ------------------------------------------------------------------ #
-    #  batch create
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    async def batch_create_tickets(
+    async def batch_create(
         db: AsyncSession,
         event_id: uuid.UUID,
         data: TicketBatchCreate,
-    ) -> List[TicketResponse]:
-        """
-        Create a TicketCategory and N individual Ticket rows (status=available).
-        Returns the list of created tickets with denormalized category info.
-        """
-        # 1. Create the ticket category internally
-        cat_data = TicketCategoryCreate(
-            name=data.name,
-            description=data.description,
-            price=data.price,
-            currency=data.currency,
-            total_quantity=data.total_quantity,
-            max_per_order=data.max_per_order,
-            sale_start=data.sale_start,
-            sale_end=data.sale_end,
-        )
-        category = await TicketCategoryService.create_ticket_category(db, event_id, cat_data)
-
-        # 2. Bulk-create individual tickets
-        tickets: List[Ticket] = []
-        for _ in range(data.total_quantity):
-            t = Ticket(
+    ) -> List[Ticket]:
+        """Create N tickets for an event with embedded category info. Returns created tickets."""
+        tickets = [
+            Ticket(
                 id=uuid.uuid4(),
                 event_id=event_id,
-                ticket_category_id=category.id,
+                category=data.category,
+                price=data.price,
+                currency=data.currency,
                 status=TicketStatus.AVAILABLE,
             )
-            tickets.append(t)
-
+            for _ in range(data.quantity)
+        ]
         db.add_all(tickets)
         await db.commit()
+        for ticket in tickets:
+            await db.refresh(ticket)
+        return tickets
 
-        # Refresh category for denormalization
-        await db.refresh(category)
+    # ── Read ──────────────────────────────────────────────────────────────────
 
-        return [
-            TicketResponse(
-                id=t.id,
-                event_id=t.event_id,
-                ticket_category_id=t.ticket_category_id,
-                status=t.status.value if isinstance(t.status, TicketStatus) else t.status,
-                external_reference=None,
-                reserved_at=None,
-                confirmed_at=None,
-                created_at=t.created_at,
-                updated_at=t.updated_at,
-                category_name=category.name,
-                price=category.price,
-                currency=category.currency,
-            )
-            for t in tickets
-        ]
-
-    # ------------------------------------------------------------------ #
-    #  queries
-    # ------------------------------------------------------------------ #
+    @staticmethod
+    async def get_ticket(db: AsyncSession, ticket_id: uuid.UUID) -> Optional[Ticket]:
+        result = await db.execute(select(Ticket).where(Ticket.id == ticket_id))
+        return result.scalar_one_or_none()
 
     @staticmethod
     async def list_tickets(
         db: AsyncSession,
         event_id: uuid.UUID,
+        category: Optional[str] = None,
+        status: Optional[str] = None,
         skip: int = 0,
         limit: int = 20,
-        status: Optional[str] = None,
-    ) -> Tuple[List[TicketResponse], int]:
+    ) -> Tuple[List[Ticket], int]:
+        filters = [Ticket.event_id == event_id]
+        if category:
+            filters.append(Ticket.category == category)
+        if status:
+            filters.append(Ticket.status == TicketStatus(status))
+
         query = (
             select(Ticket)
-            .where(Ticket.event_id == event_id)
-            .options(selectinload(Ticket.ticket_category))
+            .where(*filters)
+            .order_by(Ticket.created_at.asc())
+            .offset(skip)
+            .limit(limit)
         )
-        count_query = (
-            select(func.count())
-            .select_from(Ticket)
-            .where(Ticket.event_id == event_id)
-        )
-
-        if status:
-            query = query.where(Ticket.status == status)
-            count_query = count_query.where(Ticket.status == status)
-
-        query = query.order_by(Ticket.created_at.asc()).offset(skip).limit(limit)
+        count_query = select(func.count()).select_from(Ticket).where(*filters)
 
         result = await db.execute(query)
         tickets = list(result.scalars().all())
@@ -144,208 +75,128 @@ class TicketService:
         count_result = await db.execute(count_query)
         total = count_result.scalar()
 
-        return [TicketService._to_response(t) for t in tickets], total
+        return tickets, total
+
+    # ── Reserve (atomic) ──────────────────────────────────────────────────────
 
     @staticmethod
-    async def get_ticket(
-        db: AsyncSession, ticket_id: uuid.UUID
-    ) -> Optional[TicketResponse]:
+    async def reserve_ticket(db: AsyncSession, ticket_id: uuid.UUID) -> Optional[Ticket]:
+        """Reserve one specific ticket if it is AVAILABLE."""
         result = await db.execute(
             select(Ticket)
-            .where(Ticket.id == ticket_id)
-            .options(selectinload(Ticket.ticket_category))
+            .where(Ticket.id == ticket_id, Ticket.status == TicketStatus.AVAILABLE)
+            .with_for_update()
         )
         ticket = result.scalar_one_or_none()
         if not ticket:
+            await db.rollback()
             return None
-        return TicketService._to_response(ticket)
 
-    # ------------------------------------------------------------------ #
-    #  reserve
-    # ------------------------------------------------------------------ #
+        now = datetime.now(tz=timezone.utc)
+        ticket.status = TicketStatus.RESERVED
+        ticket.reserved_at = now
+        ticket.updated_at = now
+
+        await db.commit()
+        await db.refresh(ticket)
+        return ticket
 
     @staticmethod
     async def reserve_tickets(
         db: AsyncSession,
         event_id: uuid.UUID,
-        data: TicketReserveRequest,
-    ) -> Optional[List[TicketResponse]]:
+        quantity: int,
+        customer_email: Optional[str] = None,
+        external_reference: Optional[str] = None,
+        category: Optional[str] = None,
+    ) -> Optional[List[Ticket]]:
         """
-        Reserve N available tickets for an event.
-        If ticket_category_id is provided, reserve only from that category.
-        Uses SELECT ... FOR UPDATE SKIP LOCKED for concurrency safety.
-        Wrapped in a SAVEPOINT so partial failures roll back atomically.
-        Returns None if insufficient stock.
+        Atomically reserve N available tickets for an event.
+        Uses SELECT ... FOR UPDATE to prevent race conditions.
+        Returns the reserved tickets, or None if insufficient stock.
         """
-        async with db.begin_nested():
-            # Build query to pick available tickets with row-level lock
-            ticket_query = (
-                select(Ticket)
-                .where(Ticket.event_id == event_id)
-                .where(Ticket.status == TicketStatus.AVAILABLE)
-            )
-
-            if data.ticket_category_id:
-                ticket_query = ticket_query.where(
-                    Ticket.ticket_category_id == data.ticket_category_id
-                )
-
-            ticket_query = (
-                ticket_query
-                .order_by(Ticket.created_at.asc())
-                .limit(data.quantity)
-                .with_for_update(skip_locked=True)
-            )
-
-            result = await db.execute(ticket_query)
-            tickets = list(result.scalars().all())
-
-            if len(tickets) < data.quantity:
-                # Not enough tickets — savepoint will roll back
-                return None
-
-            # Count tickets per category in this reservation
-            per_category: dict = {}
-            for t in tickets:
-                per_category[t.ticket_category_id] = per_category.get(t.ticket_category_id, 0) + 1
-
-            now = datetime.utcnow()
-
-            for cat_id, count in per_category.items():
-                # Lock the category row
-                cat_result = await db.execute(
-                    select(TicketCategory)
-                    .where(TicketCategory.id == cat_id)
-                    .with_for_update()
-                )
-                category = cat_result.scalar_one_or_none()
-                if not category:
-                    return None
-
-                # Validate max_per_order
-                if category.max_per_order and count > category.max_per_order:
-                    return None
-
-                # Validate category status
-                if category.status != TicketCategoryStatus.AVAILABLE:
-                    return None
-
-                # Decrement available stock
-                category.available_quantity -= count
-                if category.available_quantity <= 0:
-                    category.status = TicketCategoryStatus.SOLD_OUT
-
-            # Transition tickets to reserved
-            for t in tickets:
-                t.status = TicketStatus.RESERVED
-                t.external_reference = data.external_reference
-                t.reserved_at = now
-                t.updated_at = now
-
-        # Savepoint committed — now commit the outer transaction
-        await db.commit()
-
-        # Re-fetch with category eagerly loaded for response
-        ticket_ids = [t.id for t in tickets]
-        refetch = await db.execute(
-            select(Ticket)
-            .where(Ticket.id.in_(ticket_ids))
-            .options(selectinload(Ticket.ticket_category))
-        )
-        reserved = list(refetch.scalars().all())
-
-        return [TicketService._to_response(t) for t in reserved]
-
-    # ------------------------------------------------------------------ #
-    #  confirm
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    async def confirm_ticket(
-        db: AsyncSession, ticket_id: uuid.UUID
-    ) -> Optional[TicketResponse]:
-        """
-        Confirm a reserved ticket after successful payment.
-        Transitions reserved → confirmed. Stock remains permanently decremented.
-        Called by the Composer Service after the Payment Service confirms.
-        Returns None if ticket not found or not in reserved status.
-        """
-        result = await db.execute(
-            select(Ticket)
-            .where(Ticket.id == ticket_id)
-            .options(selectinload(Ticket.ticket_category))
-            .with_for_update()
-        )
-        ticket = result.scalar_one_or_none()
-        if not ticket:
-            return None
-        if ticket.status != TicketStatus.RESERVED:
-            return None
-
-        ticket.status = TicketStatus.CONFIRMED
-        ticket.confirmed_at = datetime.utcnow()
-        ticket.updated_at = datetime.utcnow()
-
-        await db.commit()
-
-        # Re-fetch with category loaded
-        result = await db.execute(
-            select(Ticket)
-            .where(Ticket.id == ticket_id)
-            .options(selectinload(Ticket.ticket_category))
-        )
-        ticket = result.scalar_one_or_none()
-        return TicketService._to_response(ticket)
-
-    # ------------------------------------------------------------------ #
-    #  cancel
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    async def cancel_ticket(
-        db: AsyncSession, ticket_id: uuid.UUID
-    ) -> Optional[TicketResponse]:
-        """
-        Cancel a reserved ticket: transition back to available,
-        clear customer data, release stock on the category.
-        Returns None if ticket not found or not in reserved status.
-        """
-        result = await db.execute(
-            select(Ticket)
-            .where(Ticket.id == ticket_id)
-            .with_for_update()
-        )
-        ticket = result.scalar_one_or_none()
-        if not ticket:
-            return None
-        if ticket.status != TicketStatus.RESERVED:
-            return None
-
-        # Release stock back to category
-        cat_result = await db.execute(
-            select(TicketCategory)
-            .where(TicketCategory.id == ticket.ticket_category_id)
-            .with_for_update()
-        )
-        category = cat_result.scalar_one_or_none()
+        filters = [
+            Ticket.event_id == event_id,
+            Ticket.status == TicketStatus.AVAILABLE,
+        ]
         if category:
-            category.available_quantity += 1
-            if category.available_quantity > 0 and category.status == TicketCategoryStatus.SOLD_OUT:
-                category.status = TicketCategoryStatus.AVAILABLE
+            filters.append(Ticket.category == category)
 
-        # Transition ticket back to available
+        pick_query = (
+            select(Ticket)
+            .where(*filters)
+            .order_by(Ticket.created_at.asc())
+            .limit(quantity)
+            .with_for_update()
+        )
+        result = await db.execute(pick_query)
+        tickets = list(result.scalars().all())
+
+        if len(tickets) < quantity:
+            await db.rollback()
+            return None
+
+        now = datetime.now(tz=timezone.utc)
+        for ticket in tickets:
+            ticket.status = TicketStatus.RESERVED
+            ticket.customer_email = customer_email
+            ticket.external_reference = external_reference
+            ticket.reserved_at = now
+            ticket.updated_at = now
+
+        await db.commit()
+        for ticket in tickets:
+            await db.refresh(ticket)
+        return tickets
+
+    # ── Lifecycle transitions ─────────────────────────────────────────────────
+
+    @staticmethod
+    async def sell_ticket(db: AsyncSession, ticket_id: uuid.UUID) -> Optional[Ticket]:
+        """Mark a RESERVED ticket as SOLD (payment confirmed)."""
+        ticket = await TicketService.get_ticket(db, ticket_id)
+        if not ticket or ticket.status != TicketStatus.RESERVED:
+            return None
+
+        now = datetime.now(tz=timezone.utc)
+        ticket.status = TicketStatus.SOLD
+        ticket.sold_at = now
+        ticket.updated_at = now
+
+        await db.commit()
+        await db.refresh(ticket)
+        return ticket
+
+    @staticmethod
+    async def use_ticket(db: AsyncSession, ticket_id: uuid.UUID) -> Optional[Ticket]:
+        """Mark a SOLD ticket as USED (validated at gate)."""
+        ticket = await TicketService.get_ticket(db, ticket_id)
+        if not ticket or ticket.status != TicketStatus.SOLD:
+            return None
+
+        now = datetime.now(tz=timezone.utc)
+        ticket.status = TicketStatus.USED
+        ticket.used_at = now
+        ticket.updated_at = now
+
+        await db.commit()
+        await db.refresh(ticket)
+        return ticket
+
+    @staticmethod
+    async def cancel_ticket(db: AsyncSession, ticket_id: uuid.UUID) -> Optional[Ticket]:
+        """Cancel a RESERVED ticket — release it back to AVAILABLE."""
+        ticket = await TicketService.get_ticket(db, ticket_id)
+        if not ticket or ticket.status != TicketStatus.RESERVED:
+            return None
+
+        now = datetime.now(tz=timezone.utc)
         ticket.status = TicketStatus.AVAILABLE
+        ticket.customer_email = None
         ticket.external_reference = None
         ticket.reserved_at = None
-        ticket.updated_at = datetime.utcnow()
+        ticket.updated_at = now
 
         await db.commit()
-
-        # Re-fetch with category
-        result = await db.execute(
-            select(Ticket)
-            .where(Ticket.id == ticket_id)
-            .options(selectinload(Ticket.ticket_category))
-        )
-        ticket = result.scalar_one_or_none()
-        return TicketService._to_response(ticket)
+        await db.refresh(ticket)
+        return ticket

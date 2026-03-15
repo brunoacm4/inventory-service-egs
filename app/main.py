@@ -39,7 +39,7 @@ app = FastAPI(
     version=settings.app_version,
     description=(
         "Inventory management microservice for the FlashSale platform. "
-        "Manages events, ticket stock control, and ticket lifecycle (reserve, confirm, cancel). "
+        "Manages events, ticket stock control, and ticket lifecycle (reserve, sell, use, cancel). "
         "Designed to handle high-concurrency flash sale scenarios with atomic stock operations."
     ),
     openapi_version="3.1.0",

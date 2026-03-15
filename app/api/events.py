@@ -5,7 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.event import EventCreate, EventUpdate, EventResponse, EventListResponse
+from app.schemas.ticket import TicketBatchCreate, TicketListResponse
 from app.schemas.common import ErrorResponse
+from app.services.ticket_service import TicketService
 from app.services.event_service import EventService
 from app.utils.database import get_db
 from app.utils.auth import verify_auth
@@ -89,7 +91,7 @@ async def update_event(
     "/{event_id}",
     status_code=204,
     summary="Delete an event",
-    description="Delete an event and all associated ticket categories and reservations.",
+    description="Delete an event and all associated tickets.",
     responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
 )
 async def delete_event(
@@ -101,3 +103,60 @@ async def delete_event(
     if not deleted:
         raise HTTPException(status_code=404, detail="Event not found")
     return None
+
+
+@router.post(
+    "/{event_id}/tickets",
+    response_model=TicketListResponse,
+    status_code=201,
+    summary="Batch-create tickets",
+    description=(
+        "Create a batch of tickets for an event. "
+        "Each ticket is created with status 'available'."
+    ),
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+async def batch_create_tickets(
+    event_id: UUID,
+    data: TicketBatchCreate,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(verify_auth),
+):
+    event = await EventService.get_event(db, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    tickets = await TicketService.batch_create(db, event_id, data)
+    return TicketListResponse(data=tickets, total=len(tickets), skip=0, limit=len(tickets))
+
+
+@router.get(
+    "/{event_id}/tickets",
+    response_model=TicketListResponse,
+    summary="List tickets for an event",
+    description="Retrieve a paginated list of tickets for a specific event. Optionally filter by status.",
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+async def list_tickets(
+    event_id: UUID,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    status: Optional[str] = Query(
+        None,
+        description="Filter by status: available, reserved, sold, used",
+    ),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(verify_auth),
+):
+    event = await EventService.get_event(db, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    tickets, total = await TicketService.list_tickets(
+        db,
+        event_id,
+        skip=skip,
+        limit=limit,
+        status=status,
+    )
+    return TicketListResponse(data=tickets, total=total, skip=skip, limit=limit)

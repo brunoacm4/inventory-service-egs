@@ -7,10 +7,11 @@ from app.schemas.event import (
 )
 from app.schemas.ticket import (
     TicketBatchCreate,
-    TicketReserveRequest,
+    ReserveRequest,
     TicketResponse,
     TicketListResponse,
-    TicketReserveResponse,
+    ReserveResponse,
+    BatchCreateResponse,
 )
 
 __all__ = [
@@ -21,8 +22,9 @@ __all__ = [
     "EventResponse",
     "EventListResponse",
     "TicketBatchCreate",
-    "TicketReserveRequest",
+    "ReserveRequest",
     "TicketResponse",
     "TicketListResponse",
-    "TicketReserveResponse",
+    "ReserveResponse",
+    "BatchCreateResponse",
 ]

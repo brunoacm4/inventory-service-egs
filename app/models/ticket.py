@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, DateTime, ForeignKey, Enum as SAEnum
+from sqlalchemy import Column, String, Numeric, DateTime, ForeignKey, Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -13,17 +13,14 @@ import enum
 class TicketStatus(str, enum.Enum):
     AVAILABLE = "available"
     RESERVED = "reserved"
-    CONFIRMED = "confirmed"
-    CANCELLED = "cancelled"
+    SOLD = "sold"
+    USED = "used"
 
 
 class Ticket(Base):
     """
-    Represents a single ticket for an event.
-    Tickets are batch-created up front and transition through states:
-      available → reserved → confirmed (permanent sale)
-      reserved → cancelled (releases back to available pool)
-    Reserved tickets expire automatically after the configured TTL.
+    An individual ticket with embedded category info.
+    Tracks full lifecycle: available → reserved → sold → used.
     """
 
     __tablename__ = "tickets"
@@ -35,28 +32,33 @@ class Ticket(Base):
         nullable=False,
         index=True,
     )
-    ticket_category_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("ticket_categories.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
+
+    # Embedded category info
+    category = Column(String(100), nullable=False, index=True)
+    price = Column(Numeric(10, 2), nullable=False)
+    currency = Column(String(3), nullable=False, default="EUR")
+
     status = Column(
         SAEnum(TicketStatus, name="ticket_status"),
         nullable=False,
         default=TicketStatus.AVAILABLE,
     )
+    customer_email = Column(String(255), nullable=True)
     external_reference = Column(String(255), nullable=True, index=True)
     reserved_at = Column(DateTime(timezone=True), nullable=True)
-    confirmed_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    sold_at = Column(DateTime(timezone=True), nullable=True)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(tz=timezone.utc),
+        nullable=False,
+    )
     updated_at = Column(
         DateTime(timezone=True),
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=lambda: datetime.now(tz=timezone.utc),
+        onupdate=lambda: datetime.now(tz=timezone.utc),
         nullable=False,
     )
 
     # Relationships
     event = relationship("Event", back_populates="tickets")
-    ticket_category = relationship("TicketCategory", back_populates="tickets")

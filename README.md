@@ -18,26 +18,23 @@ Everything runs in Docker — PostgreSQL, Redis, and the API.
 
 ## Domain Concepts
 
-| Concept              | Description                                                                                  |
-|----------------------|----------------------------------------------------------------------------------------------|
-| **Event**            | A concert, festival, or show with dates and venue                                            |
-| **TicketCategory**   | A batch/tier of tickets (e.g., 5000 VIP seats at €149). Defines price, stock, sale window    |
-| **Reservation**      | A temporary hold on stock while payment processes. Expires after TTL (default: 15 min)       |
-| **IssuedTicket**     | An individual unique ticket, minted lazily only upon reservation confirmation (after payment) |
+- **Event**: A concert, festival, or show with dates and venue.
+- **Ticket**: An individual ticket linked to an event, with category and price info.
+- **Reservation state**: A temporary hold represented by ticket status `reserved`.
+- **Ticket lifecycle**: `available -> reserved -> sold -> used`.
 
 ## Key Components
 
-| Component   | Files                          | Purpose                                               |
-|-------------|--------------------------------|-------------------------------------------------------|
-| Models      | 4 SQLAlchemy models            | `Event`, `TicketCategory`, `Reservation`, `IssuedTicket` |
-| Schemas     | 5 Pydantic schema files        | Request/response validation, OpenAPI docs              |
-| Services    | 3 service classes              | Business logic + atomic stock management               |
-| API         | 4 endpoint modules             | 17 REST endpoints under `/api/v1/`                     |
-| Middleware  | Rate Limiter                   | Redis-backed, per API key                              |
+- **Models**: SQLAlchemy models for `Event` and `Ticket` lifecycle/state transitions.
+- **Schemas**: Pydantic request/response contracts for events and tickets.
+- **Services**: Business logic for event management, ticket inventory, and expiry jobs.
+- **API**: FastAPI routers under `/api/v1` for Events and Tickets domains.
+- **Middleware**: API-key auth support with Redis-backed rate limiting and idempotency.
 
-## API Endpoints (17 total)
+## API Endpoints
 
 ### Events — Manage event catalog
+
 | Method | Endpoint                                  | Description              |
 |--------|-------------------------------------------|--------------------------|
 | POST   | `/api/v1/events`                          | Create an event          |
@@ -45,27 +42,21 @@ Everything runs in Docker — PostgreSQL, Redis, and the API.
 | GET    | `/api/v1/events/{event_id}`               | Get event details        |
 | PUT    | `/api/v1/events/{event_id}`               | Update an event          |
 | DELETE | `/api/v1/events/{event_id}`               | Delete an event          |
+| POST   | `/api/v1/events/{event_id}/tickets`       | Batch-create tickets     |
+| GET    | `/api/v1/events/{event_id}/tickets`       | List tickets for event   |
 
-### Ticket Categories — Manage ticket batches per event
-| Method | Endpoint                                                       | Description                    |
-|--------|----------------------------------------------------------------|--------------------------------|
-| POST   | `/api/v1/events/{event_id}/ticket-categories`                  | Create a ticket category batch |
-| GET    | `/api/v1/events/{event_id}/ticket-categories`                  | List categories for an event   |
-| GET    | `/api/v1/ticket-categories/{ticket_category_id}`               | Get category details           |
-| PUT    | `/api/v1/ticket-categories/{ticket_category_id}`               | Update a category              |
-| DELETE | `/api/v1/ticket-categories/{ticket_category_id}`               | Delete a category              |
-| GET    | `/api/v1/ticket-categories/{ticket_category_id}/availability`  | Check real-time availability   |
+### Tickets — Manage ticket lifecycle
 
-### Reservations — Temporary stock holds (nested under ticket category)
-| Method | Endpoint                                                                                  | Description                         |
-|--------|-------------------------------------------------------------------------------------------|-------------------------------------|
-| POST   | `/api/v1/ticket-categories/{ticket_category_id}/reservations`                             | Create a reservation                |
-| GET    | `/api/v1/ticket-categories/{ticket_category_id}/reservations`                             | List reservations                   |
-| GET    | `/api/v1/ticket-categories/{ticket_category_id}/reservations/{reservation_id}`            | Get reservation details             |
-| POST   | `/api/v1/ticket-categories/{ticket_category_id}/reservations/{reservation_id}/confirm`    | Confirm reservation (lazy minting)  |
-| POST   | `/api/v1/ticket-categories/{ticket_category_id}/reservations/{reservation_id}/cancel`     | Cancel reservation (release stock)  |
+| Method | Endpoint                                  | Description                    |
+|--------|-------------------------------------------|--------------------------------|
+| GET    | `/api/v1/tickets/{ticket_id}`             | Get ticket details             |
+| PUT    | `/api/v1/tickets/{ticket_id}/reserve`     | Reserve available ticket       |
+| PUT    | `/api/v1/tickets/{ticket_id}/sell`        | Sell reserved ticket           |
+| PUT    | `/api/v1/tickets/{ticket_id}/use`         | Use sold ticket                |
+| DELETE | `/api/v1/tickets/{ticket_id}`             | Cancel reserved ticket         |
 
 ### Health
+
 | Method | Endpoint   | Description                                        |
 |--------|------------|----------------------------------------------------|
 | GET    | `/health`  | Health check (PostgreSQL + Redis, 200 or 503)      |
@@ -80,14 +71,13 @@ API requests are rate-limited per API key. Check the `X-RateLimit-*` response he
 
 ## Business Logic Flow
 
-1. **Composer** creates an event and ticket category batches via the Inventory Service
-2. Fan browses events and checks **availability** on a ticket category
-3. Composer calls `POST /ticket-categories/{id}/reservations` to temporarily hold tickets (stock decremented atomically with `SELECT ... FOR UPDATE`)
-4. Payment Service processes the transaction
-5. On success: Composer calls `POST /reservations/{id}/confirm` — **lazy minting** kicks in, generating unique `IssuedTicket` records for each unit
-6. On failure: Composer calls `POST /reservations/{id}/cancel` — stock is released back to the pool
-
-Reservations expire automatically after the configured TTL (default: 15 minutes).
+1. **Composer** creates an event
+2. **Composer** batch-creates tickets for the event
+3. Fan browses events and retrieves ticket inventory for that event
+4. Checkout reserves a specific available ticket with `PUT /api/v1/tickets/{ticket_id}/reserve`
+5. On payment success, call `PUT /api/v1/tickets/{ticket_id}/sell`
+6. At venue entry, call `PUT /api/v1/tickets/{ticket_id}/use`
+7. On payment failure/abandonment, call `DELETE /api/v1/tickets/{ticket_id}` to release stock
 
 ## Environment Variables
 
