@@ -3,18 +3,16 @@ Background service that expires reserved tickets past the configured TTL.
 
 Runs as an asyncio task during the app lifespan. Periodically scans for
 tickets in 'reserved' status whose reserved_at + TTL has elapsed, and
-transitions them back to 'available', releasing stock on the category.
+transitions them back to 'available'.
 """
 
 import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from sqlalchemy import select, update, func
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.models.ticket import Ticket, TicketStatus
-from app.models.ticket_category import TicketCategory, TicketCategoryStatus
 from app.utils.config import settings
 from app.utils.database import async_session
 
@@ -41,29 +39,6 @@ async def expire_reserved_tickets() -> int:
 
         if not expired_tickets:
             return 0
-
-        # Group by category to batch-update stock
-        per_category: dict = {}
-        for ticket in expired_tickets:
-            per_category[ticket.ticket_category_id] = (
-                per_category.get(ticket.ticket_category_id, 0) + 1
-            )
-
-        # Release stock on each affected category
-        for cat_id, count in per_category.items():
-            cat_result = await db.execute(
-                select(TicketCategory)
-                .where(TicketCategory.id == cat_id)
-                .with_for_update()
-            )
-            category = cat_result.scalar_one_or_none()
-            if category:
-                category.available_quantity += count
-                if (
-                    category.available_quantity > 0
-                    and category.status == TicketCategoryStatus.SOLD_OUT
-                ):
-                    category.status = TicketCategoryStatus.AVAILABLE
 
         # Transition tickets back to available
         now = datetime.utcnow()
