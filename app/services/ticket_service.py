@@ -6,6 +6,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ticket import Ticket, TicketStatus
+from app.models.event import Event, EventStatus
 from app.schemas.ticket import TicketBatchCreate
 
 
@@ -81,10 +82,15 @@ class TicketService:
 
     @staticmethod
     async def reserve_ticket(db: AsyncSession, ticket_id: uuid.UUID) -> Optional[Ticket]:
-        """Reserve one specific ticket if it is AVAILABLE."""
+        """Reserve one specific ticket only when event is published and ticket is AVAILABLE."""
         result = await db.execute(
             select(Ticket)
-            .where(Ticket.id == ticket_id, Ticket.status == TicketStatus.AVAILABLE)
+            .join(Event, Event.id == Ticket.event_id)
+            .where(
+                Ticket.id == ticket_id,
+                Ticket.status == TicketStatus.AVAILABLE,
+                Event.status == EventStatus.PUBLISHED,
+            )
             .with_for_update()
         )
         ticket = result.scalar_one_or_none()
@@ -118,12 +124,14 @@ class TicketService:
         filters = [
             Ticket.event_id == event_id,
             Ticket.status == TicketStatus.AVAILABLE,
+            Event.status == EventStatus.PUBLISHED,
         ]
         if category:
             filters.append(Ticket.category == category)
 
         pick_query = (
             select(Ticket)
+            .join(Event, Event.id == Ticket.event_id)
             .where(*filters)
             .order_by(Ticket.created_at.asc())
             .limit(quantity)
