@@ -17,6 +17,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import urlencode
 
 import httpx
 
@@ -32,12 +33,14 @@ class SmokeTester:
         self.timeout = timeout
         self.client = httpx.Client(base_url=self.base_url, timeout=self.timeout)
 
-        self.total_steps = 13
+        self.total_steps = 15
         self.passed_steps = 0
         self.failed_steps = 0
 
         self.event_id: Optional[str] = None
         self.ticket_ids: List[str] = []
+        self.kpi_enabled: Optional[bool] = None
+        self.kpi_cursor: Optional[str] = None
 
     def close(self) -> None:
         self.client.close()
@@ -118,17 +121,19 @@ class SmokeTester:
                 lambda: self._step_update_event(updated_event_name),
             )
             self._run_step(6, "POST /api/v1/events/{event_id}/tickets", self._step_create_tickets)
-            self._run_step(7, "GET /api/v1/events/{event_id}/tickets", self._step_list_tickets)
-            self._run_step(8, "GET /api/v1/tickets/{ticket_id}", self._step_get_ticket)
-            self._run_step(9, "PUT /api/v1/tickets/{ticket_id}/reserve", self._step_reserve_ticket_primary)
-            self._run_step(10, "PUT /api/v1/tickets/{ticket_id}/sell", self._step_sell_ticket_primary)
-            self._run_step(11, "PUT /api/v1/tickets/{ticket_id}/use", self._step_use_ticket_primary)
+            self._run_step(7, "GET /internal/kpi/snapshot?event_id=...", self._step_kpi_snapshot)
+            self._run_step(8, "GET /api/v1/events/{event_id}/tickets", self._step_list_tickets)
+            self._run_step(9, "GET /api/v1/tickets/{ticket_id}", self._step_get_ticket)
+            self._run_step(10, "PUT /api/v1/tickets/{ticket_id}/reserve", self._step_reserve_ticket_primary)
+            self._run_step(11, "PUT /api/v1/tickets/{ticket_id}/sell", self._step_sell_ticket_primary)
+            self._run_step(12, "PUT /api/v1/tickets/{ticket_id}/use", self._step_use_ticket_primary)
             self._run_step(
-                12,
+                13,
                 "Reserve another ticket and DELETE /api/v1/tickets/{ticket_id}",
                 self._step_cancel_flow,
             )
-            self._run_step(13, "DELETE /api/v1/events/{event_id}", self._step_delete_event)
+            self._run_step(14, "GET /internal/kpi/events?event_id=...", self._step_kpi_events)
+            self._run_step(15, "DELETE /api/v1/events/{event_id}", self._step_delete_event)
 
         except Exception:
             pass
@@ -231,6 +236,26 @@ class SmokeTester:
         self._assert(isinstance(items, list), "List tickets 'data' is not a list.")
         self._assert(len(items) >= 3, "Expected at least 3 tickets in list.")
 
+    def _step_kpi_snapshot(self) -> None:
+        self._assert(self.event_id is not None, "event_id not set before KPI snapshot.")
+        query = urlencode({"event_id": self.event_id})
+        _, data = self._request("GET", f"/internal/kpi/snapshot?{query}", expected_status=200, auth=True)
+
+        self._assert(data is not None, "KPI snapshot response body is missing.")
+        self._assert("enabled" in data, "KPI snapshot missing 'enabled' field.")
+
+        self.kpi_enabled = bool(data.get("enabled"))
+        if not self.kpi_enabled:
+            return
+
+        counts = data.get("counts")
+        self._assert(isinstance(counts, dict), "KPI snapshot 'counts' is not an object.")
+        self._assert(counts.get("total", 0) >= len(self.ticket_ids), "KPI snapshot total count is lower than created tickets.")
+        self._assert(counts.get("available", 0) >= len(self.ticket_ids), "KPI snapshot available count is lower than expected.")
+
+        by_category = data.get("by_category", [])
+        self._assert(isinstance(by_category, list), "KPI snapshot 'by_category' is not a list.")
+
     def _step_get_ticket(self) -> None:
         self._assert(len(self.ticket_ids) >= 1, "No ticket ids available for get ticket.")
         ticket_id = self.ticket_ids[0]
@@ -271,6 +296,50 @@ class SmokeTester:
         _, cancelled = self._request("DELETE", f"/api/v1/tickets/{ticket_id}", expected_status=200, auth=True)
         self._assert(cancelled is not None, "Cancel ticket response body is missing.")
         self._assert(cancelled.get("status") == "available", "Cancelled ticket should return to 'available'.")
+
+    def _step_kpi_events(self) -> None:
+        self._assert(self.event_id is not None, "event_id not set before KPI events feed.")
+        query = urlencode({"event_id": self.event_id, "limit": 200})
+        _, data = self._request("GET", f"/internal/kpi/events?{query}", expected_status=200, auth=True)
+
+        self._assert(data is not None, "KPI events response body is missing.")
+        self._assert("enabled" in data, "KPI events response missing 'enabled' field.")
+
+        enabled = bool(data.get("enabled"))
+        self.kpi_enabled = enabled if self.kpi_enabled is None else self.kpi_enabled
+        if not enabled:
+            return
+
+        items = data.get("items", [])
+        self._assert(isinstance(items, list), "KPI events 'items' is not a list.")
+        self._assert(len(items) > 0, "KPI events feed returned empty list with KPI enabled.")
+
+        event_types = {item.get("event_type") for item in items if isinstance(item, dict)}
+        required_types = {
+            "event_created",
+            "event_updated",
+            "tickets_batch_created",
+            "ticket_reserved",
+            "ticket_sold",
+            "ticket_used",
+            "ticket_cancelled",
+        }
+        missing = required_types - event_types
+        self._assert(len(missing) == 0, f"KPI events feed missing expected event types: {sorted(missing)}")
+
+        next_cursor = data.get("next_cursor")
+        self._assert(next_cursor is not None, "KPI events feed missing next_cursor.")
+        self.kpi_cursor = str(next_cursor)
+
+        query_with_cursor = urlencode({"event_id": self.event_id, "limit": 200, "cursor": self.kpi_cursor})
+        _, data_with_cursor = self._request(
+            "GET",
+            f"/internal/kpi/events?{query_with_cursor}",
+            expected_status=200,
+            auth=True,
+        )
+        self._assert(data_with_cursor is not None, "KPI events cursor follow-up response is missing.")
+        self._assert(data_with_cursor.get("enabled") is True, "KPI events cursor follow-up unexpectedly disabled.")
 
     def _step_delete_event(self) -> None:
         self._assert(self.event_id is not None, "event_id not set before delete event.")

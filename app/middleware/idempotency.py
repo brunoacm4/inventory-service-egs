@@ -98,37 +98,47 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                     content={"detail": "A request with this Idempotency-Key is already being processed. Please retry later."},
                     status_code=409,
                 )
+        except Exception:
+            # If Redis is down, process normally (fail-open)
+            logger.exception("Idempotency middleware Redis error, passing through")
+            return await call_next(request)
 
-            # Process the request
+        # Process request once. Never retry call_next on application errors.
+        try:
             response = await call_next(request)
-
-            # Read the response body so we can cache it
-            body_bytes = b""
-            async for chunk in response.body_iterator:
-                body_bytes += chunk if isinstance(chunk, bytes) else chunk.encode()
-
-            # Try to parse as JSON for caching
+        except Exception:
+            # Release processing marker so a retry can proceed.
             try:
-                body_json = json.loads(body_bytes)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                body_json = body_bytes.decode("utf-8", errors="replace")
+                await r.delete(redis_key)
+            except Exception:
+                logger.exception("Idempotency middleware failed to release processing lock")
+            raise
 
-            # Cache the response
+        # Read the response body so we can cache it
+        body_bytes = b""
+        async for chunk in response.body_iterator:
+            body_bytes += chunk if isinstance(chunk, bytes) else chunk.encode()
+
+        # Try to parse as JSON for caching
+        try:
+            body_json = json.loads(body_bytes)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body_json = body_bytes.decode("utf-8", errors="replace")
+
+        # Cache the response (best-effort)
+        try:
             cache_data = {
                 "status_code": response.status_code,
                 "body": body_json,
             }
             await r.set(redis_key, json.dumps(cache_data), ex=IDEMPOTENCY_TTL_SECONDS)
-
-            # Return a new response with the same body
-            return Response(
-                content=body_bytes,
-                status_code=response.status_code,
-                headers=dict(response.headers),
-                media_type=response.media_type,
-            )
-
         except Exception:
-            # If Redis is down, process normally (fail-open)
-            logger.exception("Idempotency middleware Redis error, passing through")
-            return await call_next(request)
+            logger.exception("Idempotency middleware failed to cache response")
+
+        # Return a new response with the same body
+        return Response(
+            content=body_bytes,
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            media_type=response.media_type,
+        )

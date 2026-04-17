@@ -24,10 +24,15 @@ class Settings(BaseSettings):
     ticket_reservation_ttl_minutes: int = 15
     expiry_check_interval_seconds: int = 30
 
+    # KPI publishing for composer
+    enable_kpi_endpoints: bool = True
+    enable_kpi_event_logging: bool = True
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "case_sensitive": False,
+        "extra": "ignore",
     }
 
 

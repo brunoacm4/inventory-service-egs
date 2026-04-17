@@ -5,9 +5,11 @@ from typing import Optional, List, Tuple
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.kpi_event import KPIEventType
 from app.models.ticket import Ticket, TicketStatus
 from app.models.event import Event, EventStatus
 from app.schemas.ticket import TicketBatchCreate
+from app.services.kpi_service import KPIService
 
 
 class TicketService:
@@ -34,6 +36,15 @@ class TicketService:
             for _ in range(data.quantity)
         ]
         db.add_all(tickets)
+        await KPIService.record_event(
+            db,
+            event_type=KPIEventType.TICKETS_BATCH_CREATED,
+            event_id=event_id,
+            category=data.category,
+            price=data.price,
+            currency=data.currency,
+            metadata={"quantity": data.quantity},
+        )
         await db.commit()
         for ticket in tickets:
             await db.refresh(ticket)
@@ -99,9 +110,22 @@ class TicketService:
             return None
 
         now = datetime.now(tz=timezone.utc)
+        before_status = ticket.status.value
         ticket.status = TicketStatus.RESERVED
         ticket.reserved_at = now
         ticket.updated_at = now
+
+        await KPIService.record_event(
+            db,
+            event_type=KPIEventType.TICKET_RESERVED,
+            event_id=ticket.event_id,
+            ticket_id=ticket.id,
+            category=ticket.category,
+            price=ticket.price,
+            currency=ticket.currency,
+            status_before=before_status,
+            status_after=ticket.status.value,
+        )
 
         await db.commit()
         await db.refresh(ticket)
@@ -167,9 +191,22 @@ class TicketService:
             return None
 
         now = datetime.now(tz=timezone.utc)
+        before_status = ticket.status.value
         ticket.status = TicketStatus.SOLD
         ticket.sold_at = now
         ticket.updated_at = now
+
+        await KPIService.record_event(
+            db,
+            event_type=KPIEventType.TICKET_SOLD,
+            event_id=ticket.event_id,
+            ticket_id=ticket.id,
+            category=ticket.category,
+            price=ticket.price,
+            currency=ticket.currency,
+            status_before=before_status,
+            status_after=ticket.status.value,
+        )
 
         await db.commit()
         await db.refresh(ticket)
@@ -183,9 +220,22 @@ class TicketService:
             return None
 
         now = datetime.now(tz=timezone.utc)
+        before_status = ticket.status.value
         ticket.status = TicketStatus.USED
         ticket.used_at = now
         ticket.updated_at = now
+
+        await KPIService.record_event(
+            db,
+            event_type=KPIEventType.TICKET_USED,
+            event_id=ticket.event_id,
+            ticket_id=ticket.id,
+            category=ticket.category,
+            price=ticket.price,
+            currency=ticket.currency,
+            status_before=before_status,
+            status_after=ticket.status.value,
+        )
 
         await db.commit()
         await db.refresh(ticket)
@@ -199,11 +249,24 @@ class TicketService:
             return None
 
         now = datetime.now(tz=timezone.utc)
+        before_status = ticket.status.value
         ticket.status = TicketStatus.AVAILABLE
         ticket.customer_email = None
         ticket.external_reference = None
         ticket.reserved_at = None
         ticket.updated_at = now
+
+        await KPIService.record_event(
+            db,
+            event_type=KPIEventType.TICKET_CANCELLED,
+            event_id=ticket.event_id,
+            ticket_id=ticket.id,
+            category=ticket.category,
+            price=ticket.price,
+            currency=ticket.currency,
+            status_before=before_status,
+            status_after=ticket.status.value,
+        )
 
         await db.commit()
         await db.refresh(ticket)

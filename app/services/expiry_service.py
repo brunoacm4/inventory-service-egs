@@ -12,7 +12,9 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
+from app.models.kpi_event import KPIEventType
 from app.models.ticket import Ticket, TicketStatus
+from app.services.kpi_service import KPIService
 from app.utils.config import settings
 from app.utils.database import async_session
 
@@ -43,10 +45,22 @@ async def expire_reserved_tickets() -> int:
         # Transition tickets back to available
         now = datetime.utcnow()
         for ticket in expired_tickets:
+            before_status = ticket.status.value
             ticket.status = TicketStatus.AVAILABLE
             ticket.external_reference = None
             ticket.reserved_at = None
             ticket.updated_at = now
+            await KPIService.record_event(
+                db,
+                event_type=KPIEventType.TICKET_EXPIRED,
+                event_id=ticket.event_id,
+                ticket_id=ticket.id,
+                category=ticket.category,
+                price=ticket.price,
+                currency=ticket.currency,
+                status_before=before_status,
+                status_after=ticket.status.value,
+            )
 
         await db.commit()
 

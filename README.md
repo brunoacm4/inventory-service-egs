@@ -61,6 +61,21 @@ Everything runs in Docker — PostgreSQL, Redis, and the API.
 |--------|------------|----------------------------------------------------|
 | GET    | `/health`  | Health check (PostgreSQL + Redis, 200 or 503)      |
 
+### Internal KPI (for Composer)
+
+These endpoints are intended for service-to-service KPI ingestion by Composer.
+They are optional and do not change existing public API behavior.
+
+| Method | Endpoint                   | Description                                              |
+|--------|----------------------------|----------------------------------------------------------|
+| GET    | `/internal/kpi/snapshot`   | Current inventory counts (global or filtered by event)   |
+| GET    | `/internal/kpi/events`     | Incremental immutable event feed with cursor pagination  |
+
+`/internal/kpi/events` query params:
+- `cursor` (optional, ISO-8601): returns events newer than cursor
+- `event_id` (optional): filter by event
+- `limit` (optional, default 500, max 1000)
+
 ## Authentication
 
 All API endpoints (except health) require an `X-API-Key` header.
@@ -88,3 +103,13 @@ API requests are rate-limited per API key. Check the `X-RateLimit-*` response he
 | `API_KEY`                 | `sk_test_inventory_change_me`     | API authentication key         |
 | `RATE_LIMIT_PER_MINUTE`   | `60`                              | Max requests per minute per key|
 | `RESERVATION_TTL_MINUTES` | `15`                              | Reservation expiry in minutes  |
+| `ENABLE_KPI_ENDPOINTS`    | `true`                            | Enable `/internal/kpi/*` endpoints |
+| `ENABLE_KPI_EVENT_LOGGING`| `true`                            | Persist KPI domain events for incremental feed |
+
+## KPI Compatibility Mode
+
+To keep Composer compatible with or without KPI ingestion:
+
+- Set `ENABLE_KPI_ENDPOINTS=false` to disable KPI data responses while preserving all public endpoints.
+- Set `ENABLE_KPI_EVENT_LOGGING=false` to stop writing KPI event records.
+- Existing `/api/v1/*` endpoints and contracts remain unchanged.

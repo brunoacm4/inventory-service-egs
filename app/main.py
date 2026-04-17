@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import events_router, tickets_router, health_router
+from app.api import events_router, tickets_router, health_router, kpi_router
 from app.middleware.rate_limiter import RateLimiterMiddleware
 from app.middleware.idempotency import IdempotencyMiddleware
 from app.services.expiry_service import reservation_expiry_loop
@@ -67,3 +67,4 @@ app.add_middleware(RateLimiterMiddleware)
 app.include_router(health_router)
 app.include_router(events_router)
 app.include_router(tickets_router)
+app.include_router(kpi_router)
