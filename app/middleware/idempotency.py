@@ -48,10 +48,11 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             self.redis = aioredis.from_url(settings.redis_url, decode_responses=True)
         return self.redis
 
-    def _make_redis_key(self, idempotency_key: str, api_key: str) -> str:
-        """Namespace the idempotency key per caller to avoid collisions."""
+    def _make_redis_key(self, idempotency_key: str, api_key: str, method: str, path: str) -> str:
+        """Namespace the idempotency key per caller and endpoint to avoid collisions."""
         caller_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
-        return f"idempotency:{caller_hash}:{idempotency_key}"
+        endpoint_hash = hashlib.sha256(f"{method.upper()} {path}".encode()).hexdigest()[:16]
+        return f"idempotency:{caller_hash}:{endpoint_hash}:{idempotency_key}"
 
     async def dispatch(self, request: Request, call_next):
         # Only apply to state-changing methods
@@ -68,7 +69,12 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         api_key = request.headers.get("X-API-Key", "anonymous")
-        redis_key = self._make_redis_key(idempotency_key, api_key)
+        redis_key = self._make_redis_key(
+            idempotency_key,
+            api_key,
+            request.method,
+            request.url.path,
+        )
 
         try:
             r = await self._get_redis()
