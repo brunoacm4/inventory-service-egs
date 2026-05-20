@@ -1,7 +1,8 @@
 import asyncio
+import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import events_router, tickets_router, health_router, kpi_router
@@ -62,6 +63,25 @@ app.add_middleware(IdempotencyMiddleware)
 
 # Rate Limiter
 app.add_middleware(RateLimiterMiddleware)
+
+
+def _strip_public_prefix(scope, prefix: str):
+    path = scope.get("path", "")
+    if path == prefix:
+        scope["path"] = "/"
+        scope["root_path"] = prefix
+    elif path.startswith(f"{prefix}/"):
+        scope["path"] = path[len(prefix):] or "/"
+        scope["root_path"] = prefix
+
+
+@app.middleware("http")
+async def pod_name_header_middleware(request: Request, call_next):
+    _strip_public_prefix(request.scope, "/inventory")
+    response = await call_next(request)
+    response.headers["X-Pod-Name"] = os.getenv("POD_NAME") or os.getenv("HOSTNAME", "unknown")
+    return response
+
 
 # Routers
 app.include_router(health_router)
