@@ -2,7 +2,8 @@ import time
 from typing import Optional
 
 import redis.asyncio as aioredis
-from fastapi import Request, HTTPException
+from fastapi import Request
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.utils.config import settings
@@ -38,17 +39,22 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
             if current == 1:
                 await r.expire(key, 60)
 
-            # Set rate limit headers
-            response = await call_next(request)
-            response.headers["X-RateLimit-Limit"] = str(self.rate_limit)
-            response.headers["X-RateLimit-Remaining"] = str(max(0, self.rate_limit - current))
+            rate_headers = {
+                "X-RateLimit-Limit": str(self.rate_limit),
+                "X-RateLimit-Remaining": str(max(0, self.rate_limit - current)),
+            }
 
             if current > self.rate_limit:
-                raise HTTPException(status_code=429, detail="Rate limit exceeded")
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "Rate limit exceeded"},
+                    headers=rate_headers,
+                )
+
+            response = await call_next(request)
+            response.headers.update(rate_headers)
 
             return response
-        except HTTPException:
-            raise
         except Exception:
             # If Redis is down, allow the request through
             return await call_next(request)
